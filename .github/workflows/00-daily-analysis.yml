@@ -1,6 +1,6 @@
 name: 每日股票分析
 on:
-  # 北京时间18点 = UTC10点，周一至周五
+  # 北京时间18点 = UTC10点，周一到周五
   schedule:
     - cron: '0 10 * * 1-5'
   # 网页手动一键运行
@@ -80,7 +80,8 @@ jobs:
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
 
-          # ========== 你在用的AI模型（只保留Gemini/AIHubMix，其余全部移除） ==========
+          # ========== AI模型密钥（新增DEEPSEEK读取行） ==========
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
           LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
