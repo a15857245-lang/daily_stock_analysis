@@ -29,12 +29,11 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    # 已删除非法 environment: STOCK_LIST 行
-    # 修复timeout表达式，兜底固定30分钟，无解析报错
+    # 动态超时，无变量默认30分钟
     timeout-minutes: ${{ vars.ANALYSIS_TIMEOUT_MINUTES != '' && fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES) || 30 }}
 
     steps:
-      - name: 随机延迟0-60秒，防风控限流
+      - name: 随机延迟0-60秒，降低搜索风控限流概率
         run: sleep $((RANDOM % 60))
 
       - name: 拉取仓库全部代码
@@ -54,7 +53,7 @@ jobs:
       - name: 创建数据、日志、报告目录
         run: mkdir -p data logs reports
 
-      # 关键调试步骤：打印飞书webhook是否正常读取，一眼定位空值问题
+      # 校验飞书推送密钥，提前阻断无webhook的无效运行
       - name: 校验飞书推送配置
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
@@ -66,28 +65,31 @@ jobs:
             echo "✅ 飞书Webhook链接加载正常，可推送消息"
           fi
 
-      # 仅保留股票+飞书必需变量，删除全部冗余LLM渠道、多余通知渠道，解决env超长截断问题
+      # 主运行步骤：双密钥环境变量 + shell自动切换逻辑
       - name: 执行股票分析主程序
         env:
-          # ========== 飞书推送核心配置 ==========
+          # ========== 飞书推送配置 ==========
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
           FEISHU_WEBHOOK_KEYWORD: ${{ vars.FEISHU_WEBHOOK_KEYWORD || secrets.FEISHU_WEBHOOK_KEYWORD }}
 
-          # ========== 自选股、行情基础配置 ==========
+          # ========== 行情、自选股基础配置 ==========
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
           MARKET_REVIEW_REGION: cn
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           TICKFLOW_API_KEY: ${{ secrets.TICKFLOW_API_KEY }}
 
-          # ========== AI模型密钥（新增DEEPSEEK读取行） ==========
+          # ========== 双密钥同时保留（自动切换核心） ==========
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ANSPIRE_API_KEYS: ${{ secrets.ANSPIRE_API_KEYS }}
+
+          # 其他备用模型（无密钥不影响，自动跳过）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
           LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
           LITELLM_MODEL: ${{ vars.LITELLM_MODEL || secrets.LITELLM_MODEL }}
 
-          # ========== 系统运行基础参数 ==========
+          # ========== 系统运行固定参数 ==========
           LOG_LEVEL: INFO
           MAX_WORKERS: 1
           REALTIME_SOURCE_PRIORITY: tencent,akshare_sina,efinance,akshare_em
@@ -102,7 +104,17 @@ jobs:
             export STOCK_LIST="600519"
           fi
 
-          # 读取手动触发参数
+          # ===================== 自动切换核心逻辑 =====================
+          # 判断DeepSeek密钥是否为空，空则彻底删除该环境变量，程序自动使用Anspire做LLM+搜索
+          if [ -z "$DEEPSEEK_API_KEY" ]; then
+            unset DEEPSEEK_API_KEY
+            echo "ℹ️ 未检测到有效DeepSeek密钥，自动切换至Anspire（LLM推理+新闻搜索一体化）"
+          else
+            echo "ℹ️ 检测到有效DeepSeek密钥，优先使用DeepSeek做AI分析，Anspire仅负责新闻情报抓取"
+          fi
+          # ==========================================================
+
+          # 读取手动运行参数
           MODE="${{ github.event.inputs.mode || 'full' }}"
           FORCE_RUN_ARG=""
           if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
@@ -115,7 +127,7 @@ jobs:
           echo "自选股代码：$STOCK_LIST"
           echo "=========================================================="
 
-          # 执行主分析脚本
+          # 启动主分析脚本
           if [ "$MODE" = "market-only" ]; then
             python main.py --market-review $FORCE_RUN_ARG
           elif [ "$MODE" = "stocks-only" ]; then
@@ -124,10 +136,9 @@ jobs:
             python main.py $FORCE_RUN_ARG
           fi
 
-          # 执行完打印飞书推送状态（方便排查）
           echo "✅ 股票分析脚本执行完成，等待内部推送飞书报告"
 
-      # 无论成功/失败都保存报告日志，方便线上排查
+      # 无论成功失败，保存报告、日志用于排查
       - name: 打包报告与日志存档
         if: always()
         uses: actions/upload-artifact@v6
